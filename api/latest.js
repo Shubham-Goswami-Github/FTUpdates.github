@@ -1,1 +1,74 @@
-import{initializeApp,cert,getApps}from'firebase-admin/app';import{getFirestore}from'firebase-admin/firestore';function store(){if(!getApps().length)initializeApp({credential:cert({projectId:process.env.FIREBASE_PROJECT_ID,clientEmail:process.env.FIREBASE_CLIENT_EMAIL,privateKey:(process.env.FIREBASE_PRIVATE_KEY||'').replace(/\\n/g,'\n')})});return getFirestore()}export default async function handler(req,res){res.setHeader('Cache-Control','no-store');res.setHeader('Access-Control-Allow-Origin','*');if(req.method!=='GET')return res.status(405).json({error:'Method not allowed'});try{const s=await store().collection('appReleases').where('appId','==','com.cscorner.financetracker').where('status','==','published').orderBy('versionCode','desc').limit(1).get();if(s.empty)return res.status(404).json({error:'No release published yet'});const d=s.docs[0].data();return res.status(200).json({appId:d.appId,versionName:d.versionName,versionCode:d.versionCode,minVersionCode:d.minVersionCode||1,mandatory:!!d.mandatory,releaseNotes:d.releaseNotes||'',apkUrl:d.apkUrl,publishedAt:d.createdAt?.toDate?d.createdAt.toDate().toISOString():null})}catch(e){console.error(e);return res.status(500).json({error:'Could not read latest release'})}}
+import { adminDb } from "./_lib/firebaseAdmin.js";
+
+const APP_ID = "com.cscorner.financetracker";
+
+export default async function handler(req, res) {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    return res.status(405).json({
+      error: "Method not allowed."
+    });
+  }
+
+  try {
+    const snapshot = await adminDb()
+      .collection("appReleases")
+      .where("appId", "==", APP_ID)
+      .where("status", "==", "published")
+      .get();
+
+    if (snapshot.empty) {
+      return res.status(404).json({
+        error: "No published release found."
+      });
+    }
+
+    const releases = snapshot.docs
+      .map((doc) => ({
+        id: doc.id,
+        ...doc.data()
+      }))
+      .filter((release) => {
+        return (
+          Number.isInteger(Number(release.versionCode)) &&
+          Number(release.versionCode) > 0 &&
+          typeof release.versionName === "string" &&
+          typeof release.apkUrl === "string" &&
+          release.apkUrl.startsWith("https://")
+        );
+      })
+      .sort(
+        (a, b) =>
+          Number(b.versionCode) - Number(a.versionCode)
+      );
+
+    if (releases.length === 0) {
+      return res.status(422).json({
+        error: "No valid published release is configured."
+      });
+    }
+
+    const latest = releases[0];
+
+    return res.status(200).json({
+      appId: APP_ID,
+      versionName: latest.versionName,
+      versionCode: Number(latest.versionCode),
+      minVersionCode: Number(latest.minVersionCode || 1),
+      mandatory: latest.mandatory === true,
+      releaseNotes: latest.releaseNotes || "",
+      apkUrl: latest.apkUrl,
+      publishedAt: latest.createdAt?.toDate
+        ? latest.createdAt.toDate().toISOString()
+        : null
+    });
+  } catch (error) {
+    console.error("Latest release error:", error);
+
+    return res.status(500).json({
+      error: "Could not read latest release."
+    });
+  }
+}
